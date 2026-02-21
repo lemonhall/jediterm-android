@@ -24,6 +24,12 @@ android {
     kotlinOptions { jvmTarget = "1.8" }
 
     buildFeatures { compose = true }
+
+    packaging {
+        resources {
+            excludes += "META-INF/versions/**/OSGI-INF/MANIFEST.MF"
+        }
+    }
 }
 
 dependencies {
@@ -39,4 +45,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     debugImplementation(libs.androidx.compose.ui.tooling)
     implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.jsch)
+
+    testImplementation(libs.junit)
 }

@@ -9,6 +9,7 @@ junit = "4.13.2"
 slf4jApi = "1.7.36"
 slf4jAndroid = "1.7.36"
 jetbrainsAnnotations = "23.0.0"
+jsch = "0.2.17"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -26,6 +27,7 @@ slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4jApi" 
 slf4j-android = { group = "org.slf4j", name = "slf4j-android", version.ref = "slf4jAndroid" }
 slf4j-simple = { group = "org.slf4j", name = "slf4j-simple", version.ref = "slf4jApi" }
 jetbrains-annotations = { group = "org.jetbrains", name = "annotations", version.ref = "jetbrainsAnnotations" }
+jsch = { group = "com.github.mwiede", name = "jsch", version.ref = "jsch" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]

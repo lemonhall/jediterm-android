@@ -6,3 +6,9 @@
 local.properties
 *.iml
 .DS_Store
+
+# SSH secrets
+.env
+id_rsa
+id_rsa.pub
+*.pem

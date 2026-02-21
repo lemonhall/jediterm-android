@@ -51,6 +51,7 @@ fun ComposeTerminalView(
   modifier: Modifier = Modifier,
   columns: Int = 80,
   rows: Int = 24,
+  onResize: ((columns: Int, rows: Int) -> Unit)? = null,
 ) {
   val executorServiceManager = remember { AndroidExecutorServiceManager() }
   val session = remember { TerminalSessionManager(columns = columns, rows = rows, executorServiceManager = executorServiceManager) }
@@ -127,6 +128,7 @@ fun ComposeTerminalView(
           currentColumns = newCols
           currentRows = newRows
           session.resize(newCols, newRows)
+          onResize?.invoke(newCols, newRows)
         }
       }
       .onPreviewKeyEvent { keyEvent ->
