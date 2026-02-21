@@ -9,16 +9,25 @@ import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 
+/**
+ * A custom View whose sole purpose is to receive soft-keyboard (IME) input and forward it to the terminal session.
+ *
+ * Uses BaseInputConnection(this, true) to enable an internal Editable buffer.
+ * This is critical for CJK input methods: during composing (pinyin → candidate → commit),
+ * the IME writes intermediate text into the Editable. On commitText / finishComposingText
+ * we extract the full text from the Editable, send it to the terminal, then clear the buffer.
+ * Without this, multi-byte characters like "我们" get partially lost or garbled.
+ */
 class TerminalInputView(context: Context) : View(context) {
-
     companion object {
         private const val TAG = "JeditermIme"
     }
 
+    /** Called when IME commits final text (letters, paste, candidate commit, etc.). */
     var onCommitText: ((String) -> Unit)? = null
-    var onKeyEvent: ((KeyEvent) -> Boolean)? = null
 
-    private var composingActive: Boolean = false
+    /** Called when IME or hardware sends a key event (Enter/Backspace/arrows/etc.). */
+    var onKeyEvent: ((KeyEvent) -> Boolean)? = null
 
     init {
         isFocusable = true
@@ -29,57 +38,63 @@ class TerminalInputView(context: Context) : View(context) {
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
                 EditorInfo.IME_FLAG_NO_EXTRACT_UI or
                 EditorInfo.IME_ACTION_NONE
-
         outAttrs.initialSelStart = 0
         outAttrs.initialSelEnd = 0
 
-        return object : BaseInputConnection(this, false) {
+        // true = 启用内部 Editable 缓冲区，中文 IME composing 文本会正确累积
+        return object : BaseInputConnection(this, true) {
 
-            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                composingActive = false
-                if (!text.isNullOrEmpty()) {
-                    val str = text.toString()
-                    Log.d(TAG, "commitText len=${str.length} text='${str.take(32)}'")
-                    val normalized = str.replace("\r\n", "\r").replace("\n", "\r")
-                    onCommitText?.invoke(normalized)
-                }
-                return true
+            /** 从 Editable 取出所有文本发送到终端，然后清空 */
+            private fun sendEditableToTerminal() {
+                val content = editable ?: return
+                if (content.isEmpty()) return
+                val str = content.toString()
+                Log.d(TAG, "sendEditable len=${str.length} text='${str.take(32)}'")
+                val normalized = str.replace("\r\n", "\r").replace("\n", "\r")
+                onCommitText?.invoke(normalized)
+                content.clear()
             }
 
-            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                composingActive = !text.isNullOrEmpty()
-                Log.d(TAG, "setComposingText active=$composingActive len=${text?.length ?: 0}")
+            override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                super.commitText(text, newCursorPosition)
+                sendEditableToTerminal()
                 return true
             }
 
             override fun finishComposingText(): Boolean {
-                composingActive = false
-                Log.d(TAG, "finishComposingText")
+                super.finishComposingText()
+                sendEditableToTerminal()
                 return true
             }
 
+            override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                // 委托给 super，让 BaseInputConnection 管理 composing span
+                return super.setComposingText(text, newCursorPosition)
+            }
+
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                Log.d(TAG, "deleteSurroundingText before=$beforeLength after=$afterLength composing=$composingActive")
-                if (composingActive) return true
+                Log.d(TAG, "deleteSurroundingText before=$beforeLength after=$afterLength")
+                // 先让 super 处理内部 Editable
+                val result = super.deleteSurroundingText(beforeLength, afterLength)
+                // 如果 Editable 里还有 composing 文本，不发删除键
+                val content = editable
+                if (content != null && content.isNotEmpty()) return result
+                // Editable 为空，说明是在已提交文本上删除，发退格键
                 if (beforeLength > 0) {
                     repeat(beforeLength) {
                         onKeyEvent?.invoke(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL))
                     }
-                    return true
                 }
                 if (afterLength > 0) {
                     repeat(afterLength) {
                         onKeyEvent?.invoke(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_FORWARD_DEL))
                     }
-                    return true
                 }
-                return super.deleteSurroundingText(beforeLength, afterLength)
+                return true
             }
 
             override fun performEditorAction(actionCode: Int): Boolean {
@@ -97,18 +112,6 @@ class TerminalInputView(context: Context) : View(context) {
                 if (event.action == KeyEvent.ACTION_DOWN) {
                     val handled = onKeyEvent?.invoke(event) ?: false
                     if (handled) return true
-
-                    // Fallback: some IMEs send printable chars as key events
-                    // instead of commitText (especially in VISIBLE_PASSWORD mode).
-                    // mapKeyEventToTerminalBytes returns null for these, so we
-                    // need to extract the unicode char and send it ourselves.
-                    val unicodeChar = event.unicodeChar
-                    if (unicodeChar != 0) {
-                        val ch = unicodeChar.toChar()
-                        Log.d(TAG, "sendKeyEvent fallback char='$ch' code=0x${unicodeChar.toString(16)}")
-                        onCommitText?.invoke(ch.toString())
-                        return true
-                    }
                 }
                 return super.sendKeyEvent(event)
             }
@@ -119,18 +122,12 @@ class TerminalInputView(context: Context) : View(context) {
         if (event.action == KeyEvent.ACTION_DOWN) {
             val handled = onKeyEvent?.invoke(event) ?: false
             if (handled) return true
-
-            val unicodeChar = event.unicodeChar
-            if (unicodeChar != 0) {
-                Log.d(TAG, "onKeyDown fallback char='${unicodeChar.toChar()}' code=0x${unicodeChar.toString(16)}")
-                onCommitText?.invoke(unicodeChar.toChar().toString())
-                return true
-            }
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        // Consume ACTION_UP to prevent default handling.
         return true
     }
 }

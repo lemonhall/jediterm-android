@@ -146,6 +146,11 @@ class JSchTtyConnector(
         inputStream = input
         outputStream = output
         reader = InputStreamReader(input, StandardCharsets.UTF_8)
+        // 修复：某些 SSH 服务端（如 macOS）分配的 PTY session 中 LANG/LC_ALL 为空，
+        // 导致 zsh 等 shell 将多字节 UTF-8 序列当作 meta 字符处理，中文显示为乱码。
+        val initCmd = "export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8; stty iutf8\n"
+        outputStream!!.write(initCmd.toByteArray(StandardCharsets.UTF_8))
+        outputStream!!.flush()
     }
 
     override fun read(buf: CharArray, offset: Int, length: Int): Int {
@@ -386,3 +391,9 @@ interface TtyConnector {
 - 第五步完全重写，加入 `MeasureTerminalSize` 两阶段流程，先测量再连接
 - API 速查新增 `MeasureTerminalSize`，`ComposeTerminalView` 新增 `fontSize` 参数
 - 注意事项里补充了 resize 竞态问题的说明和像素参数不能传 0 的要求
+
+
+- **macOS SSH 中文支持**：macOS 的 sshd 给新 PTY session 分配的 `LANG` 和 `LC_CTYPE` 可能为空，
+  zsh 会将 UTF-8 多字节序列的高位字节当作 meta 字符，导致中文输入/显示为 `<0088><0091>` 等乱码。
+  `JSchTtyConnector.connect()` 中已通过发送 `export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8; stty iutf8` 修复。
+  副作用是连接后终端会回显这行初始化命令，可在后续版本中用 `clear` 清屏优化体验。

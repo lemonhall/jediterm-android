@@ -10,6 +10,7 @@ import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
+import java.io.BufferedInputStream
 
 class JSchTtyConnector(
     private val host: String,
@@ -23,7 +24,7 @@ class JSchTtyConnector(
 
     private var session: Session? = null
     private var channel: ChannelShell? = null
-    private var inputStream: InputStream? = null
+    private var bufferedInput: BufferedInputStream? = null
     private var outputStream: OutputStream? = null
     private var reader: InputStreamReader? = null
 
@@ -50,7 +51,6 @@ class JSchTtyConnector(
             setPtyType("xterm-256color", columns, rows, columns * 8, rows * 16)
         }
 
-        // Important: get streams before connect() so JSch wires IO correctly.
         val input = sshChannel.inputStream
         val output = sshChannel.outputStream
 
@@ -60,24 +60,55 @@ class JSchTtyConnector(
 
         session = sshSession
         channel = sshChannel
-        inputStream = input
         outputStream = output
-        reader = InputStreamReader(input, StandardCharsets.UTF_8)
+
+        val buffered = BufferedInputStream(input)
+        bufferedInput = buffered
+        reader = InputStreamReader(buffered, StandardCharsets.UTF_8)
+
+        // 修复 UTF-8 环境
+        val initCmd = "export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8; stty iutf8\n"
+        outputStream!!.write(initCmd.toByteArray(StandardCharsets.UTF_8))
+        outputStream!!.flush()
     }
 
     override fun read(buf: CharArray, offset: Int, length: Int): Int {
         val localReader = reader ?: throw IOException("SSH channel not connected")
-        return localReader.read(buf, offset, length)
+        val n = localReader.read(buf, offset, length)
+        if (n > 0) {
+            logNonAscii(buf, offset, n)
+        }
+        return n
+    }
+
+    private fun logNonAscii(buf: CharArray, offset: Int, count: Int) {
+        try {
+            var hasNonAscii = false
+            val end = minOf(offset + count, offset + 20, buf.size)
+            for (i in offset until end) {
+                if (buf[i].code > 0x7F) { hasNonAscii = true; break }
+            }
+            if (hasNonAscii) {
+                val sb = StringBuilder()
+                for (i in offset until end) {
+                    sb.append(Integer.toHexString(buf[i].code)).append(' ')
+                }
+                Log.e("JeditermDbg", "read chars: $sb")
+            }
+        } catch (_: Exception) {}
     }
 
     override fun write(bytes: ByteArray) {
         val out = outputStream ?: throw IOException("SSH channel not connected")
+        Log.e("JeditermDbg", "write raw bytes=${bytes.map { "0x%02X".format(it) }}")
         out.write(bytes)
         out.flush()
     }
 
     override fun write(string: String) {
-        write(string.toByteArray(StandardCharsets.UTF_8))
+        val bytes = string.toByteArray(StandardCharsets.UTF_8)
+        write(bytes)
+        Log.e("JeditermDbg", "write string='$string' bytes=${bytes.map { "0x%02X".format(it) }}")
     }
 
     override fun isConnected(): Boolean {
@@ -86,7 +117,7 @@ class JSchTtyConnector(
     }
 
     override fun ready(): Boolean {
-        val input = inputStream ?: return false
+        val input = bufferedInput ?: return false
         return input.available() > 0
     }
 

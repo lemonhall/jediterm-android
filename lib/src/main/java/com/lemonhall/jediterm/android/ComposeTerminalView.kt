@@ -191,6 +191,8 @@ fun ComposeTerminalView(
                 }
                 inputView.onCommitText = { text ->
                     if (text.isNotEmpty()) {
+                        val hex = text.map { "U+%04X".format(it.code) }
+                        Log.e("JeditermDbg", "onCommitText text='$text' codes=$hex")
                         Log.d(logTag, "onCommitText len=${text.length} text='${text.take(20)}'")
                         session.sendString(text, userInput = true)
                     }
