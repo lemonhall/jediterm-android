@@ -1,13 +1,8 @@
 package com.lemonhall.jediterm.android
 
 import android.content.Context
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
 import android.util.Log
-import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
-import android.widget.EditText
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -59,7 +54,7 @@ fun ComposeTerminalView(
   val executorServiceManager = remember { AndroidExecutorServiceManager() }
   val session = remember { TerminalSessionManager(columns = columns, rows = rows, executorServiceManager = executorServiceManager) }
   var bufferVersion by remember { mutableIntStateOf(0) }
-  var editTextRef by remember { mutableStateOf<EditText?>(null) }
+  var inputViewRef by remember { mutableStateOf<TerminalInputView?>(null) }
 
   DisposableEffect(session) {
     val listener = TerminalModelListener {
@@ -130,53 +125,17 @@ fun ComposeTerminalView(
   ) {
     AndroidView(
       factory = { context ->
-        EditText(context).apply {
-          alpha = 0f
-          setBackgroundColor(android.graphics.Color.TRANSPARENT)
-          setTextColor(android.graphics.Color.TRANSPARENT)
-          isCursorVisible = false
-          textSize = 1f
-          isFocusable = true
-          isFocusableInTouchMode = true
-
-          inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-          imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
-
-          addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-              val editable = s ?: return
-              val text = editable.toString()
-              if (text.isNotEmpty()) {
-                Log.d(logTag, "afterTextChanged len=${text.length} hasNewline=${text.indexOf('\n') >= 0}")
-                val normalized = text
-                  .replace("\r\n", "\n")
-                  .replace("\r", "\n")
-                  .replace("\n", "\r")
-                session.sendString(normalized, userInput = true)
-                post { editable.clear() }
-              }
-            }
-          })
-
-          setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE ||
-              actionId == EditorInfo.IME_ACTION_GO ||
-              actionId == EditorInfo.IME_ACTION_SEND
-            ) {
-              session.sendString("\r", userInput = true)
-              true
-            } else {
-              false
+        TerminalInputView(context).apply {
+          onCommitText = { text ->
+            if (text.isNotEmpty()) {
+              Log.d(logTag, "onCommitText len=${text.length}")
+              session.sendString(text, userInput = true)
             }
           }
-
-          setOnKeyListener { _, _, event ->
-            if (event.action != android.view.KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+          onKeyEvent = { event ->
             val bytes = mapKeyEventToTerminalBytes(KeyEvent(event), session)
             if (bytes != null) {
-              Log.d(logTag, "onKeyDown keyCode=${event.keyCode} sendBytes=${bytes.size}")
+              Log.d(logTag, "onKeyEvent keyCode=${event.keyCode} sendBytes=${bytes.size}")
               session.sendBytes(bytes)
               true
             } else {
@@ -186,14 +145,31 @@ fun ComposeTerminalView(
         }
       },
       modifier = Modifier.matchParentSize(),
-      update = { editText ->
-        if (editTextRef !== editText) {
-          editTextRef = editText
+      update = { inputView ->
+        if (inputViewRef !== inputView) {
+          inputViewRef = inputView
         }
-        if (!editText.hasFocus()) {
-          editText.requestFocus()
-          val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-          imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+        inputView.onCommitText = { text ->
+          if (text.isNotEmpty()) {
+            Log.d(logTag, "onCommitText len=${text.length}")
+            session.sendString(text, userInput = true)
+          }
+        }
+        inputView.onKeyEvent = { event ->
+          val bytes = mapKeyEventToTerminalBytes(KeyEvent(event), session)
+          if (bytes != null) {
+            Log.d(logTag, "onKeyEvent keyCode=${event.keyCode} sendBytes=${bytes.size}")
+            session.sendBytes(bytes)
+            true
+          } else {
+            false
+          }
+        }
+
+        if (!inputView.hasFocus()) {
+          inputView.requestFocus()
+          val imm = inputView.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+          imm.showSoftInput(inputView, InputMethodManager.SHOW_IMPLICIT)
           Log.d(logTag, "requestFocus+showSoftInput")
         }
       },
@@ -204,10 +180,11 @@ fun ComposeTerminalView(
         .fillMaxSize()
         .pointerInput(Unit) {
           detectTapGestures {
-            editTextRef?.let { et ->
-              et.requestFocus()
-              val imm = et.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-              imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+            inputViewRef?.let { v ->
+              v.requestFocus()
+              val imm = v.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+              imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)
+              Log.d(logTag, "tap->requestFocus+showSoftInput")
             }
           }
         }
