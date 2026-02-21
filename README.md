@@ -1,86 +1,88 @@
 # jediterm-android
 
-把 JetBrains 的 [JediTerm](https://github.com/JetBrains/jediterm) 终端仿真引擎移植到 Android（UI 使用 Jetpack Compose），用于通过 SSH 连接远程服务器并运行 TUI 程序（vim、htop、tmux 等）。
+中文说明见 `README.zh_cn.md`.
 
-本仓库产出一个 Android Library（`.aar`），供主项目 [kotlinagentapp](https://github.com/lemonhall/kotlinagentapp) 通过 composite build 或直接依赖使用。主项目已使用 JSch 进行 SSH 连接，本库提供终端仿真和 Compose 渲染层。
+An Android port of JetBrains' [JediTerm](https://github.com/JetBrains/jediterm) terminal emulation engine (UI built with Jetpack Compose). It's designed to connect to remote servers over SSH and run TUI apps like vim, htop, and tmux.
 
-## 运行效果
+This repository produces an Android Library (`.aar`) intended to be consumed by the main project [kotlinagentapp](https://github.com/lemonhall/kotlinagentapp) via composite build or as a direct dependency. The main project already handles SSH via JSch; this library provides terminal emulation plus a Compose rendering/input layer.
 
-> 下面截图来自 `:sample` demo app（真机已验证可用）。
+## Demo
+
+> Screenshot from the `:sample` demo app (verified on a physical device).
 
 ![jediterm-android screenshot](./screenshot.png)
 
-## 当前状态（已在真机验证）
+## Status (verified on device)
 
-- Android 端通过 JSch（`ChannelShell`）建立 SSH 连接后，可稳定输入/回显，运行常见 TUI 程序（vim/htop/tmux 等）。
-- 已修复两个曾导致“能看到 prompt 但一打字就断开 / 中文乱码”的致命问题，见「踩坑与修复」。
+- Stable interactive SSH session over JSch (`ChannelShell`) with reliable input/echo; runs common TUI programs (vim/htop/tmux, etc.).
+- Two critical issues have been fixed (disconnect-on-first-keystroke race, and macOS Chinese encoding), see "Gotchas & Fixes".
 
-## 架构
+## Architecture
 
 ```
-Android 设备                              远程 Mac
+Android device                            Remote macOS
 ┌──────────────────────────┐        ┌──────────────────┐
 │ ComposeTerminalView      │        │                  │
-│   ↕ 渲染/输入            │        │  sshd → PTY      │
+│   ↕ render / input       │        │  sshd → PTY      │
 │ JediTerm core            │  SSH   │   ↕              │
-│   ↕ 终端仿真             │◄──────►│  vim/htop/tmux   │
+│   ↕ terminal emulation   │◄──────►│  vim/htop/tmux   │
 │ JSch (ChannelShell)      │        │                  │
 └──────────────────────────┘        └──────────────────┘
 ```
 
 ## Modules
 
-- `:lib` Android Library（JediTerm core 源码 + Compose 终端组件 + TerminalDisplay 适配）
-- `:sample` 最小 demo app（编译/渲染验证用）
+- `:lib` Android library (JediTerm core sources + Compose terminal components + TerminalDisplay adapter)
+- `:sample` minimal demo app (build/render verification)
 
-## 渲染方案
+## Rendering approach
 
-UI 层使用 Compose `Canvas` 逐字符绘制终端内容，而非 `BasicText` / `AnnotatedString`。原因：
+The UI renders terminal content character-by-character using a Compose `Canvas`, rather than `BasicText` / `AnnotatedString`, because:
 
-- 终端需要精确的等宽字符定位（尤其是 CJK 双宽字符）
-- 需要逐字符控制前景色/背景色（256 色 + true color）
-- vim 等 TUI 程序快速滚动时，Canvas 直绘性能优于频繁重建 AnnotatedString
+- Terminals require precise monospace glyph positioning (especially for double-width CJK characters)
+- Per-cell foreground/background control is needed (256 colors + true color)
+- For fast scrolling in apps like vim, direct Canvas drawing performs better than rebuilding large annotated text spans
 
-**文本选择**采用自实现方案（不依赖系统原生文本选择），与 Termux、iTerm2、Windows Terminal 等主流终端一致：
+**Text selection** is implemented in-app (not using platform text selection), similar to Termux, iTerm2, and Windows Terminal:
 
-- 长按/拖拽手势 → 计算触摸坐标对应的行列位置 → 维护选区状态 → 绘制高亮背景 → 从 `TerminalTextBuffer` 读取选中文本 → 写入剪贴板
-- 支持行选择和矩形选择
-- 双击选词、三击选行
-- 选择操作不干扰终端的鼠标事件上报（vim 中鼠标点击用于定位光标，不触发文本选择）
-- JediTerm core 已内置 `TerminalSelection` 类，适配层基于此实现
+- Long-press/drag → map touch coordinates to row/column → maintain selection state → draw highlight background → read text from `TerminalTextBuffer` → copy to clipboard
+- Supports line selection and rectangular selection
+- Double-tap to select a word; triple-tap to select a line
+- Selection does not interfere with terminal mouse reporting (e.g. clicking in vim moves the cursor instead of selecting)
+- JediTerm core includes `TerminalSelection`; the adapter layer builds on it
 
 ## Upstream
 
-JediTerm 源码取自 JetBrains/jediterm：`985e58caa97899e2d1b933aecd326421c65cd729`（`core` 模块），许可证选择 Apache 2.0。
+JediTerm sources are taken from JetBrains/jediterm: `985e58caa97899e2d1b933aecd326421c65cd729` (`core` module), licensed under Apache 2.0.
 
-## 踩坑与修复
+## Gotchas & Fixes
 
-### 1) 竞态问题：`onSizeChanged` 过早触发导致 SSH channel 被关闭
+### 1) Race condition: early `onSizeChanged` triggers close the SSH channel
 
-#### 问题根因
+#### Root cause
 
-SSH 连接建立后，`ComposeTerminalView` 的 `onSizeChanged` 在 Compose 布局阶段会立即触发；但此时 `TerminalStarter` 的 emulator 循环尚未完全就绪。`session.resize()` 会让 jediterm 内部向 SSH channel 写入终端 resize 相关的控制序列，而此刻 JSch 的 channel IO 管道还没准备好接收这类数据，服务端可能直接关闭 SSH channel（典型日志：`read returned -1 EOF`）。
+After the SSH connection is established, `ComposeTerminalView.onSizeChanged` can fire immediately during the Compose layout phase, while `TerminalStarter`'s emulator loop is not fully ready yet. Calling `session.resize()` makes JediTerm write terminal resize control sequences into the SSH channel; at that moment, JSch's channel I/O pipeline may not be ready to accept such data, and the server may close the channel (typical log: `read returned -1 EOF`).
 
-表现为：连接后能正常显示 prompt（read 正常），但第一次键盘输入后 channel 立即断开，后续所有输入无效。
+Symptom: the prompt appears after connecting (read path is OK), but the channel disconnects right after the first keystroke, and all subsequent input becomes ineffective.
 
-#### 修复方式
+#### Fix
 
-在 `ComposeTerminalView` 中增加 `sessionStarted` 守卫：
+Add a `sessionStarted` guard in `ComposeTerminalView`:
 
-- `LaunchedEffect` 里 `startSession()` 完成后，延迟 500ms 再将 `sessionStarted` 置为 `true`
-- `onSizeChanged` 回调中仅当 `sessionStarted == true` 时才执行 `session.resize()`（以及上层 `onResize` 回调）
+- In `LaunchedEffect`, after `startSession()` completes, wait 500ms before setting `sessionStarted = true`
+- In `onSizeChanged`, only call `session.resize()` (and the upstream `onResize` callback) when `sessionStarted == true`
 
-从而避免 emulator 未就绪时触发 resize 写入造成竞态。
+This avoids writing resize sequences while the emulator is not ready, eliminating the race.
 
-### 2) 服务端语言编码问题：macOS SSH 新 PTY 环境变量为空导致中文乱码
+### 2) Server-side locale/encoding: macOS SSH PTY with empty env causes Chinese mojibake
 
-macOS 的 sshd 给新 PTY session 分配的 `LANG` / `LC_CTYPE` 可能为空，zsh 会将 UTF-8 多字节序列的高位字节当作 meta 字符，导致中文输入/显示为 `<0088><0091>` 等乱码。
+On macOS, sshd may create a new PTY session with `LANG` / `LC_CTYPE` unset. zsh can then treat high-bit bytes of UTF-8 multibyte sequences as meta characters, causing Chinese input/output to turn into sequences like `<0088><0091>`.
 
-`JSchTtyConnector.connect()` 已通过发送初始化命令修复：
+`JSchTtyConnector.connect()` fixes this by sending an initialization command:
 
 - `export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8; stty iutf8`
 
-副作用：连接后终端会回显这行初始化命令；可在后续版本中用 `clear` 清屏优化体验。
+Side effect: the terminal echoes this initialization command after connecting. A future improvement is to issue `clear` to keep the screen clean.
 
 ## Build
 
@@ -93,4 +95,4 @@ macOS 的 sshd 给新 PTY session 分配的 `LANG` / `LC_CTYPE` 可能为空，z
 
 ## License
 
-本项目 Android 适配层代码采用 Apache 2.0 许可。JediTerm core 代码遵循其原始的 Apache 2.0 许可。
+The Android adapter layer in this project is licensed under Apache 2.0. JediTerm core code follows its original Apache 2.0 license.
