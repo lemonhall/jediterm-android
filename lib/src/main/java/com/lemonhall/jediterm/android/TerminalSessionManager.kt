@@ -6,6 +6,8 @@ import com.jediterm.core.typeahead.TypeAheadTerminalModel.LineWithCursorX
 import com.jediterm.core.util.TermSize
 import com.jediterm.terminal.RequestOrigin
 import com.jediterm.terminal.TerminalStarter
+import com.jediterm.terminal.TerminalColor
+import com.jediterm.terminal.TextStyle
 import com.jediterm.terminal.TtyBasedArrayDataStream
 import com.jediterm.terminal.TtyConnector
 import com.jediterm.terminal.model.JediTerminal
@@ -18,11 +20,16 @@ class TerminalSessionManager(
   columns: Int = 80,
   rows: Int = 24,
   private val executorServiceManager: AndroidExecutorServiceManager = AndroidExecutorServiceManager(),
-  val display: ComposeTerminalDisplay = ComposeTerminalDisplay(),
+  display: ComposeTerminalDisplay? = null,
 ) {
-  private val styleState = StyleState()
+  val display: ComposeTerminalDisplay = display ?: ComposeTerminalDisplay(executorServiceManager::runOnUiThread)
+  private val styleState = StyleState().apply {
+    val defaultStyle = TextStyle(TerminalColor.index(15), TerminalColor.index(0))
+    setDefaultStyle(defaultStyle)
+    setCurrent(defaultStyle)
+  }
   val terminalTextBuffer: TerminalTextBuffer = TerminalTextBuffer(columns, rows, styleState)
-  val terminal: JediTerminal = JediTerminal(display, terminalTextBuffer, styleState)
+  val terminal: JediTerminal = JediTerminal(this.display, terminalTextBuffer, styleState)
 
   private val started = AtomicBoolean(false)
   private var terminalStarter: TerminalStarter? = null
@@ -64,6 +71,10 @@ class TerminalSessionManager(
     terminalStarter?.sendString(text, userInput)
   }
 
+  fun sendBytes(bytes: ByteArray, userInput: Boolean = true) {
+    terminalStarter?.sendBytes(bytes, userInput)
+  }
+
   fun resize(columns: Int, rows: Int, origin: RequestOrigin = RequestOrigin.User) {
     terminalStarter?.postResize(TermSize(columns, rows), origin)
   }
@@ -84,4 +95,3 @@ class TerminalSessionManager(
     override fun getShellType(): TypeAheadTerminalModel.ShellType = TypeAheadTerminalModel.ShellType.Unknown
   }
 }
-

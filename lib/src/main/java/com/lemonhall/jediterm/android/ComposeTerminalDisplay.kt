@@ -10,7 +10,9 @@ import com.jediterm.terminal.emulator.mouse.MouseFormat
 import com.jediterm.terminal.emulator.mouse.MouseMode
 import com.jediterm.terminal.model.TerminalSelection
 
-class ComposeTerminalDisplay : TerminalDisplay {
+class ComposeTerminalDisplay(
+  private val runOnUiThread: ((() -> Unit) -> Unit)? = null,
+) : TerminalDisplay {
   var cursorX by mutableIntStateOf(0)
     private set
   var cursorY by mutableIntStateOf(0)
@@ -28,12 +30,14 @@ class ComposeTerminalDisplay : TerminalDisplay {
   private var selectionState: TerminalSelection? by mutableStateOf(null)
 
   override fun setCursor(x: Int, y: Int) {
-    cursorX = x
-    cursorY = y
+    updateOnUiThread {
+      cursorX = x
+      cursorY = y
+    }
   }
 
   override fun setCursorShape(cursorShape: CursorShape?) {
-    cursorShapeState = cursorShape
+    updateOnUiThread { cursorShapeState = cursorShape }
   }
 
   override fun beep() = Unit
@@ -41,7 +45,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
   override fun scrollArea(scrollRegionTop: Int, scrollRegionSize: Int, dy: Int) = Unit
 
   override fun setCursorVisible(isCursorVisible: Boolean) {
-    cursorVisibleState = isCursorVisible
+    updateOnUiThread { cursorVisibleState = isCursorVisible }
   }
 
   override fun useAlternateScreenBuffer(useAlternateScreenBuffer: Boolean) = Unit
@@ -49,7 +53,7 @@ class ComposeTerminalDisplay : TerminalDisplay {
   override fun getWindowTitle(): String = windowTitleState
 
   override fun setWindowTitle(windowTitle: String) {
-    windowTitleState = windowTitle
+    updateOnUiThread { windowTitleState = windowTitle }
   }
 
   override fun getSelection(): TerminalSelection? = selectionState
@@ -59,4 +63,13 @@ class ComposeTerminalDisplay : TerminalDisplay {
   override fun setMouseFormat(mouseFormat: MouseFormat) = Unit
 
   override fun ambiguousCharsAreDoubleWidth(): Boolean = false
+
+  private inline fun updateOnUiThread(crossinline block: () -> Unit) {
+    val runner = runOnUiThread
+    if (runner == null) {
+      block()
+    } else {
+      runner { block() }
+    }
+  }
 }

@@ -8,7 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import com.lemonhall.jediterm.android.ComposeTerminalView
-import com.lemonhall.jediterm.android.mockEchoConnector
+import com.lemonhall.jediterm.android.mockColorTestConnector
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -17,10 +17,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    ComposeTerminalView(ttyConnector = mockEchoConnector())
+                    ComposeTerminalView(ttyConnector = mockColorTestConnector())
                 }
             }
         }
     }
 }
-

@@ -9,9 +9,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 fun mockEchoConnector(): TtyConnector = EchoTtyConnector()
 
-private class EchoTtyConnector : TtyConnector {
+fun mockColorTestConnector(): TtyConnector = EchoTtyConnector(initialOutput = buildAnsiColorTestOutput())
+
+private class EchoTtyConnector(
+  initialOutput: String = "",
+) : TtyConnector {
   private val connected = AtomicBoolean(true)
   private val queue = LinkedBlockingQueue<Int>()
+
+  init {
+    if (initialOutput.isNotEmpty()) {
+      enqueue(initialOutput)
+    }
+  }
 
   override fun read(buf: CharArray, offset: Int, length: Int): Int {
     try {
@@ -68,3 +78,51 @@ private class EchoTtyConnector : TtyConnector {
   }
 }
 
+private fun buildAnsiColorTestOutput(): String {
+  return buildString {
+    append("\u001b[2J\u001b[H")
+    append("jediterm-android ANSI render test\r\n\r\n")
+
+    append("\u001b[1mBold\u001b[0m  ")
+    append("\u001b[3mItalic\u001b[0m  ")
+    append("\u001b[4mUnderline\u001b[0m  ")
+    append("\u001b[7mInverse\u001b[0m\r\n\r\n")
+
+    append("16 colors (bg):\r\n")
+    for (i in 0 until 16) {
+      append("\u001b[48;5;")
+      append(i)
+      append("m  \u001b[0m")
+    }
+    append("\r\n\r\n")
+
+    append("256 colors (bg, 16-231):\r\n")
+    var col = 0
+    for (i in 16..231) {
+      append("\u001b[48;5;")
+      append(i)
+      append("m ")
+      append("\u001b[0m")
+      col++
+      if (col >= 64) {
+        append("\r\n")
+        col = 0
+      }
+    }
+    append("\r\n\r\n")
+
+    append("True color:\r\n")
+    append("\u001b[48;2;255;0;0m  \u001b[0m ")
+    append("\u001b[48;2;0;255;0m  \u001b[0m ")
+    append("\u001b[48;2;0;0;255m  \u001b[0m ")
+    append("\u001b[38;2;255;165;0mOrange\u001b[0m\r\n\r\n")
+
+    append("Scrollback (swipe/drag):\r\n")
+    for (i in 1..80) {
+      append("Line ")
+      append(i)
+      append("\r\n")
+    }
+    append("\r\nType here. Arrow keys / Esc / Tab / Ctrl+<key> should work.\r\n")
+  }
+}
