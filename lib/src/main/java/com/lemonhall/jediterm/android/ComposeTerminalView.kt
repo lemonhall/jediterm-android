@@ -139,9 +139,7 @@ fun ComposeTerminalView(
           isFocusable = true
           isFocusableInTouchMode = true
 
-          inputType = InputType.TYPE_CLASS_TEXT or
-            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+          inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
           imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
 
           addTextChangedListener(object : TextWatcher {
@@ -155,6 +153,7 @@ fun ComposeTerminalView(
                 val normalized = text
                   .replace("\r\n", "\n")
                   .replace("\r", "\n")
+                  .replace("\n", "\r")
                 session.sendString(normalized, userInput = true)
                 post { editable.clear() }
               }
@@ -166,7 +165,7 @@ fun ComposeTerminalView(
               actionId == EditorInfo.IME_ACTION_GO ||
               actionId == EditorInfo.IME_ACTION_SEND
             ) {
-              session.sendString("\n", userInput = true)
+              session.sendString("\r", userInput = true)
               true
             } else {
               false
@@ -342,11 +341,11 @@ private fun mapKeyEventToTerminalBytes(keyEvent: KeyEvent, session: TerminalSess
 
   val modifiers = buildJediModifiers(native)
 
-  // Some environments don't translate CR to NL; prefer LF for Enter.
+  // Enter => CR only.
   if (native.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
     native.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
   ) {
-    return byteArrayOf(Ascii.LF)
+    return byteArrayOf(Ascii.CR)
   }
 
   // Ctrl + [A-Z] => control char.

@@ -50,14 +50,18 @@ class JSchTtyConnector(
 
     val sshChannel = (sshSession.openChannel("shell") as ChannelShell).apply {
       setPtyType("xterm-256color", columns, rows, 0, 0)
-      connect(10_000)
     }
+
+    // Important: get streams before connect() so JSch wires IO correctly.
+    val input = sshChannel.inputStream
+    val output = sshChannel.outputStream
+
+    sshChannel.connect(10_000)
 
     session = sshSession
     channel = sshChannel
-    val input = sshChannel.inputStream
     inputStream = input
-    outputStream = sshChannel.outputStream
+    outputStream = output
     reader = InputStreamReader(input, StandardCharsets.UTF_8)
   }
 
@@ -65,6 +69,14 @@ class JSchTtyConnector(
     val localReader = reader ?: throw IOException("SSH channel not connected")
     val n = localReader.read(buf, offset, length)
     if (n > 0 && readLogRemaining > 0) {
+      if (readLogRemaining == 200) {
+        val previewLen = minOf(n, 120)
+        val preview = String(buf, offset, previewLen)
+          .replace("\r", "\\r")
+          .replace("\n", "\\n")
+          .replace("\u001B", "\\e")
+        Log.d(logTag, "read preview: \"$preview\"")
+      }
       readLogRemaining--
       Log.d(logTag, "read chars=$n")
     }
@@ -76,6 +88,12 @@ class JSchTtyConnector(
     if (writeLogRemaining > 0) {
       writeLogRemaining--
       Log.d(logTag, "write bytes=${bytes.size}")
+      if (bytes.size == 1) {
+        val b = bytes[0].toInt() and 0xFF
+        if (b in 0x61..0x7A) {
+          Log.d(logTag, "write ascii=0x%02X".format(b))
+        }
+      }
     }
     if (bytes.isNotEmpty()) {
       val controlBytes = bytes
