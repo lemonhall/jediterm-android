@@ -1,3 +1,10 @@
+柠檬叔，我先看一下当前 jediterm-android 仓库的最新状态，确认 API 变化。
+
+好，我看到仓库里的代码还没有更新（还是旧版的 `MainActivity.kt`，没有 `MeasureTerminalSize`，`ComposeTerminalView` 也没有 `fontSize` 参数）。我基于你给我的最新本地代码来修订文档。
+
+修订后的集成指南：
+
+```markdown
 # jediterm-android 集成指南（面向 kotlinagentapp）
 
 本文档指导如何在 kotlinagentapp 主项目中集成 jediterm-android，实现 SSH 终端功能。
@@ -51,9 +58,7 @@ external/
 includeBuild("external/jediterm-android")
 ```
 
-> 注意：这里不需要 `dependencySubstitution` 块，前提是 jediterm-android 的
-> `lib/build.gradle.kts` 中已声明了 `group` 和 `version`。
-> 如果没有，需要在 jediterm-android 仓库中添加：
+> 注意：jediterm-android 的 `lib/build.gradle.kts` 中需要声明 `group` 和 `version`：
 > ```kotlin
 > group = "com.lemonhall.jediterm"
 > version = "0.1.0"
@@ -77,9 +82,14 @@ implementation("com.lemonhall.jediterm:lib:0.1.0")
 ```kotlin
 package com.lsl.kotlin_agent_app.ssh
 
+import android.util.Log
+import com.jcraft.jsch.ChannelShell
+import com.jcraft.jsch.JSch
+import com.jcraft.jsch.Session
 import com.jediterm.terminal.TtyConnector
-import com.jcraft.jsch.*
+import java.io.IOException
 import java.io.InputStream
+import java.io.InputStreamReader
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
 
@@ -91,11 +101,13 @@ class JSchTtyConnector(
     private val privateKeyPath: String? = null,
     private val passphrase: String? = null,
 ) : TtyConnector {
+    private val logTag = "JeditermSsh"
 
-    private lateinit var session: Session
-    private lateinit var channel: ChannelShell
-    private lateinit var inputStream: InputStream
-    private lateinit var outputStream: OutputStream
+    private var session: Session? = null
+    private var channel: ChannelShell? = null
+    private var inputStream: InputStream? = null
+    private var outputStream: OutputStream? = null
+    private var reader: InputStreamReader? = null
 
     /** 必须在 Dispatchers.IO 中调用 */
     fun connect(columns: Int = 80, rows: Int = 24) {
@@ -109,72 +121,93 @@ class JSchTtyConnector(
             }
         }
 
-        session = jsch.getSession(username, host, port).apply {
-            if (!password.isNullOrBlank()) setPassword(password)
+        val sshSession = jsch.getSession(username, host, port).apply {
+            if (!password.isNullOrBlank()) {
+                setPassword(password)
+            }
             setConfig("StrictHostKeyChecking", "no")
             connect(10_000)
         }
 
-        channel = (session.openChannel("shell") as ChannelShell).apply {
-            setPtyType("xterm-256color", columns, rows, 0, 0)
+        val sshChannel = (sshSession.openChannel("shell") as ChannelShell).apply {
+            setPtyType("xterm-256color", columns, rows, columns * 8, rows * 16)
         }
 
-        inputStream = channel.inputStream
-        outputStream = channel.outputStream
-        channel.connect(10_000)
+        // Important: get streams before connect() so JSch wires IO correctly.
+        val input = sshChannel.inputStream
+        val output = sshChannel.outputStream
+
+        sshChannel.connect(10_000)
+
+        Log.d(logTag, "connect OK: channel.isConnected=${sshChannel.isConnected} session.isConnected=${sshSession.isConnected}")
+
+        session = sshSession
+        channel = sshChannel
+        inputStream = input
+        outputStream = output
+        reader = InputStreamReader(input, StandardCharsets.UTF_8)
     }
 
     override fun read(buf: CharArray, offset: Int, length: Int): Int {
-        val bytes = ByteArray(length)
-        val bytesRead = inputStream.read(bytes, 0, length)
-        if (bytesRead <= 0) return bytesRead
-        val str = String(bytes, 0, bytesRead, StandardCharsets.UTF_8)
-        str.toCharArray(buf, offset, 0, str.length)
-        return str.length
+        val localReader = reader ?: throw IOException("SSH channel not connected")
+        return localReader.read(buf, offset, length)
     }
 
     override fun write(bytes: ByteArray) {
-        outputStream.write(bytes)
-        outputStream.flush()
+        val out = outputStream ?: throw IOException("SSH channel not connected")
+        out.write(bytes)
+        out.flush()
     }
 
     override fun write(string: String) {
         write(string.toByteArray(StandardCharsets.UTF_8))
     }
 
-    override fun isConnected(): Boolean =
-        ::channel.isInitialized && channel.isConnected && !channel.isClosed
-
-    override fun waitFor(): Int {
-        while (isConnected) Thread.sleep(100)
-        return channel.exitStatus
+    override fun isConnected(): Boolean {
+        val ch = channel
+        return ch != null && ch.isConnected && !ch.isClosed
     }
 
-    override fun ready(): Boolean =
-        ::inputStream.isInitialized && inputStream.available() > 0
+    override fun ready(): Boolean {
+        val input = inputStream ?: return false
+        return input.available() > 0
+    }
 
-    override fun getName(): String = "SSH [$username@$host:$port]"
+    override fun getName(): String = "ssh [$username@$host:$port]"
 
     override fun close() {
-        runCatching { if (::channel.isInitialized) channel.disconnect() }
-        runCatching { if (::session.isInitialized) session.disconnect() }
+        try { channel?.disconnect() } catch (_: Exception) {}
+        try { session?.disconnect() } catch (_: Exception) {}
     }
 
     fun resizePty(columns: Int, rows: Int) {
-        if (::channel.isInitialized && channel.isConnected) {
-            channel.setPtySize(columns, rows, 0, 0)
+        val ch = channel ?: return
+        if (ch.isConnected && !ch.isClosed) {
+            ch.setPtySize(columns, rows, columns * 8, rows * 16)
         }
     }
 }
 ```
 
+关键注意事项：
+- `setPtyType` 和 `setPtySize` 的像素尺寸参数不能传 0，否则某些 SSH 服务器会异常关闭 channel
+- `getInputStream()` / `getOutputStream()` 必须在 `channel.connect()` 之前调用，这是 JSch 的要求
+- 使用 `InputStreamReader` 包装 inputStream，由它处理 UTF-8 解码
+
 ## 第五步：在 UI 中使用
+
+集成时需要注意一个关键的竞态问题：`ComposeTerminalView` 内部的 `onSizeChanged` 会在 Compose 布局阶段立即触发 `session.resize()`，如果此时 `TerminalStarter` 的 emulator 循环尚未就绪，jediterm 写入的 resize 控制序列会导致 SSH channel 被关闭。
+
+解决方案：**先测量屏幕尺寸，用测量结果初始化 SSH 连接和终端 session，避免连接后再 resize。**
 
 ```kotlin
 import com.lemonhall.jediterm.android.ComposeTerminalView
+import com.lemonhall.jediterm.android.MeasureTerminalSize
 import com.lsl.kotlin_agent_app.ssh.JSchTtyConnector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+private const val TERMINAL_FONT_SIZE = 14f
 
 @Composable
 fun SshTerminalScreen(
@@ -183,10 +216,24 @@ fun SshTerminalScreen(
     username: String,
     privateKeyPath: String,
 ) {
-    var connector by remember { mutableStateOf<JSchTtyConnector?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // 第一阶段：测量屏幕，得到实际的列数和行数
+    var measuredSize by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
-    LaunchedEffect(host, username) {
+    if (measuredSize == null) {
+        MeasureTerminalSize(fontSize = TERMINAL_FONT_SIZE) { cols, rows ->
+            measuredSize = cols to rows
+        }
+        return
+    }
+
+    val (initialCols, initialRows) = measuredSize!!
+
+    // 第二阶段：用测量到的尺寸去连接 SSH
+    var state by remember { mutableStateOf<ConnectionState>(ConnectionState.Connecting) }
+    var connector by remember { mutableStateOf<JSchTtyConnector?>(null) }
+
+    LaunchedEffect(host, username, initialCols, initialRows) {
+        state = ConnectionState.Connecting
         try {
             val conn = withContext(Dispatchers.IO) {
                 JSchTtyConnector(
@@ -194,11 +241,12 @@ fun SshTerminalScreen(
                     port = port,
                     username = username,
                     privateKeyPath = privateKeyPath,
-                ).also { it.connect() }
+                ).also { it.connect(columns = initialCols, rows = initialRows) }
             }
             connector = conn
+            state = ConnectionState.Connected
         } catch (e: Exception) {
-            error = e.message
+            state = ConnectionState.Error(e.message ?: "Unknown error")
         }
     }
 
@@ -206,17 +254,28 @@ fun SshTerminalScreen(
         onDispose { connector?.close() }
     }
 
-    when {
-        error != null -> Text("连接失败: $error")
-        connector != null -> {
-            ComposeTerminalView(
-                ttyConnector = connector!!,
-                modifier = Modifier.fillMaxSize(),
-                onResize = { cols, rows -> connector!!.resizePty(cols, rows) },
-            )
+    when (val s = state) {
+        is ConnectionState.Connecting -> CircularProgressIndicator()
+        is ConnectionState.Error -> Text("连接失败: ${s.message}")
+        is ConnectionState.Connected -> {
+            connector?.let { conn ->
+                ComposeTerminalView(
+                    ttyConnector = conn,
+                    modifier = Modifier.fillMaxSize(),
+                    columns = initialCols,
+                    rows = initialRows,
+                    fontSize = TERMINAL_FONT_SIZE,
+                    onResize = { cols, rows -> conn.resizePty(cols, rows) },
+                )
+            }
         }
-        else -> CircularProgressIndicator()
     }
+}
+
+private sealed class ConnectionState {
+    data object Connecting : ConnectionState()
+    data object Connected : ConnectionState()
+    data class Error(val message: String) : ConnectionState()
 }
 ```
 
@@ -277,7 +336,16 @@ adb shell run-as com.lsl.kotlin_agent_app chmod 600 /data/data/com.lsl.kotlin_ag
 ## API 速查
 
 ```kotlin
-// 核心 Composable
+// 屏幕测量（先调用，获取适合当前设备的列数和行数）
+import com.lemonhall.jediterm.android.MeasureTerminalSize
+
+@Composable
+fun MeasureTerminalSize(
+    fontSize: Float = 14f,
+    onMeasured: (columns: Int, rows: Int) -> Unit,
+)
+
+// 终端渲染组件
 import com.lemonhall.jediterm.android.ComposeTerminalView
 
 @Composable
@@ -286,6 +354,7 @@ fun ComposeTerminalView(
     modifier: Modifier = Modifier,
     columns: Int = 80,
     rows: Int = 24,
+    fontSize: Float = 14f,
     onResize: ((columns: Int, rows: Int) -> Unit)? = null,
 )
 
@@ -295,17 +364,25 @@ interface TtyConnector {
     fun write(bytes: ByteArray)
     fun write(string: String)
     fun isConnected(): Boolean
-    fun waitFor(): Int
     fun ready(): Boolean
     fun getName(): String
     fun close()
 }
 ```
 
-## 注意事项
+## 已知问题与注意事项
 
 - `JSchTtyConnector.connect()` 必须在 `Dispatchers.IO` 中调用
-- `ComposeTerminalView` 自动管理 JediTerm emulator 线程生命周期
-- Composable dispose 时自动停止 session
+- `ComposeTerminalView` 自动管理 JediTerm emulator 线程生命周期，Composable dispose 时自动停止 session
+- **必须先调用 `MeasureTerminalSize` 获取屏幕实际列数/行数，再用该值初始化 SSH 连接和 `ComposeTerminalView`**。如果用默认的 80x24 初始化，后续的 resize 会在 `TerminalStarter` 未就绪时触发，导致 SSH channel 被关闭（详见 bug_fix_final.md）
+- `setPtyType` / `setPtySize` 的像素尺寸参数不能传 0，应传 `columns * 8, rows * 16` 等合理估算值
+- `fontSize` 参数控制终端字体大小（单位 sp），同时决定屏幕能容纳的列数和行数。手机上建议 14-16，平板可以用 12-14
 - 文本选择功能尚未实现（规划中）
 - `onResize` 回调用于同步远端 PTY 尺寸，不传的话屏幕旋转后 vim 等 TUI 程序不会正确重绘
+```
+
+主要修订点：
+- 第四步的 `JSchTtyConnector` 替换为清理后的正式版，`setPtyType`/`setPtySize` 像素参数改为 `columns * 8, rows * 16`
+- 第五步完全重写，加入 `MeasureTerminalSize` 两阶段流程，先测量再连接
+- API 速查新增 `MeasureTerminalSize`，`ComposeTerminalView` 新增 `fontSize` 参数
+- 注意事项里补充了 resize 竞态问题的说明和像素参数不能传 0 的要求

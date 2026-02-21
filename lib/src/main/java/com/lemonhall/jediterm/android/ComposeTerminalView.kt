@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -23,6 +24,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontStyle
@@ -42,12 +44,45 @@ import com.jediterm.terminal.model.TerminalModelListener
 import com.jediterm.terminal.util.CharUtils
 import kotlin.math.floor
 
+/**
+ * 测量屏幕后回调实际的列数和行数，供外部用来初始化 SSH 连接。
+ * 调用方拿到 columns/rows 后再创建 TtyConnector 并传给 [ComposeTerminalView]。
+ */
+@Composable
+fun MeasureTerminalSize(
+    fontSize: Float = 14f,
+    onMeasured: (columns: Int, rows: Int) -> Unit,
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val baseTextStyle = remember(fontSize) {
+        TextStyle(fontFamily = FontFamily.Monospace, fontSize = fontSize.sp)
+    }
+    val charLayout = remember(textMeasurer, baseTextStyle) {
+        textMeasurer.measure(text = "M", style = baseTextStyle)
+    }
+    val charWidthPx = charLayout.size.width.toFloat().coerceAtLeast(1f)
+    val charHeightPx = charLayout.size.height.toFloat().coerceAtLeast(1f)
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val widthPx = with(density) { maxWidth.toPx() }
+        val heightPx = with(density) { maxHeight.toPx() }
+        val cols = floor(widthPx / charWidthPx).toInt().coerceAtLeast(5)
+        val rows = floor(heightPx / charHeightPx).toInt().coerceAtLeast(2)
+
+        LaunchedEffect(cols, rows) {
+            onMeasured(cols, rows)
+        }
+    }
+}
+
 @Composable
 fun ComposeTerminalView(
     ttyConnector: TtyConnector,
     modifier: Modifier = Modifier,
     columns: Int = 80,
     rows: Int = 24,
+    fontSize: Float = 14f,
     onResize: ((columns: Int, rows: Int) -> Unit)? = null,
 ) {
     val logTag = "JeditermIme"
@@ -58,7 +93,6 @@ fun ComposeTerminalView(
 
     var bufferVersion by remember { mutableIntStateOf(0) }
     var inputViewRef by remember { mutableStateOf<TerminalInputView?>(null) }
-    // 标记 session 是否已启动完成
     var sessionStarted by remember { mutableStateOf(false) }
 
     DisposableEffect(session) {
@@ -69,7 +103,6 @@ fun ComposeTerminalView(
 
     LaunchedEffect(session, ttyConnector) {
         session.startSession(ttyConnector)
-        // startSession 内部会启动 emulator 循环，给它一点时间就绪
         kotlinx.coroutines.delay(500)
         sessionStarted = true
     }
@@ -77,10 +110,10 @@ fun ComposeTerminalView(
     DisposableEffect(session) { onDispose { session.stopSession() } }
 
     val textMeasurer = rememberTextMeasurer()
-    val baseTextStyle = remember {
+    val baseTextStyle = remember(fontSize) {
         TextStyle(
             fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
+            fontSize = fontSize.sp,
         )
     }
     val charLayout = remember(textMeasurer, baseTextStyle) {
@@ -122,7 +155,6 @@ fun ComposeTerminalView(
                 if (newCols != currentColumns || newRows != currentRows) {
                     currentColumns = newCols
                     currentRows = newRows
-                    // 只有 session 启动后才做 resize，避免竞态
                     if (sessionStarted) {
                         Log.d(logTag, "resize cols=$newCols rows=$newRows")
                         session.resize(newCols, newRows)

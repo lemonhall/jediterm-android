@@ -24,96 +24,108 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.lemonhall.jediterm.android.ComposeTerminalView
+import com.lemonhall.jediterm.android.MeasureTerminalSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 private const val TAG = "JediTermSample"
+private const val TERMINAL_FONT_SIZE = 14f
 
 class MainActivity : ComponentActivity() {
-  override fun onCreate(savedInstanceState: Bundle?) {
-    super.onCreate(savedInstanceState)
-
-    val config = SshConfigReader.read(this)
-
-    setContent {
-      MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
-          SshTerminalScreen(config)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val config = SshConfigReader.read(this)
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    SshTerminalScreen(config)
+                }
+            }
         }
-      }
     }
-  }
 }
 
 @Composable
 private fun SshTerminalScreen(config: SshConfig) {
-  var state by remember { mutableStateOf<ConnectionState>(ConnectionState.Connecting) }
-  var connector by remember { mutableStateOf<JSchTtyConnector?>(null) }
+    // 第一阶段：测量屏幕，得到实际的列数和行数
+    var measuredSize by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
-  LaunchedEffect(config) {
-    state = ConnectionState.Connecting
-    try {
-      val conn = withContext(Dispatchers.IO) {
-        JSchTtyConnector(
-          host = config.host,
-          port = config.port,
-          username = config.user,
-          password = config.password,
-          privateKeyPath = config.privateKeyPath,
-          passphrase = config.passphrase,
-        ).also { it.connect() }
-      }
-      connector = conn
-      state = ConnectionState.Connected
-      Log.i(TAG, "SSH connected to ${config.user}@${config.host}:${config.port}")
-    } catch (e: Exception) {
-      Log.e(TAG, "SSH connection failed", e)
-      state = ConnectionState.Error(e.message ?: "Unknown error")
-    }
-  }
-
-  DisposableEffect(Unit) {
-    onDispose {
-      connector?.close()
-    }
-  }
-
-  when (val s = state) {
-    is ConnectionState.Connecting -> {
-      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-          CircularProgressIndicator()
-          Spacer(Modifier.height(16.dp))
-          Text("Connecting to ${config.user}@${config.host}:${config.port}...")
+    if (measuredSize == null) {
+        MeasureTerminalSize(fontSize = TERMINAL_FONT_SIZE) { cols, rows ->
+            Log.i(TAG, "Measured terminal size: ${cols}x${rows}")
+            measuredSize = cols to rows
         }
-      }
+        return
     }
 
-    is ConnectionState.Error -> {
-      Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-          Text("Connection failed", style = MaterialTheme.typography.headlineSmall)
-          Spacer(Modifier.height(8.dp))
-          Text(s.message, color = MaterialTheme.colorScheme.error)
+    val (initialCols, initialRows) = measuredSize!!
+
+    // 第二阶段：用测量到的尺寸去连接 SSH
+    var state by remember { mutableStateOf<ConnectionState>(ConnectionState.Connecting) }
+    var connector by remember { mutableStateOf<JSchTtyConnector?>(null) }
+
+    LaunchedEffect(config, initialCols, initialRows) {
+        state = ConnectionState.Connecting
+        try {
+            val conn = withContext(Dispatchers.IO) {
+                JSchTtyConnector(
+                    host = config.host,
+                    port = config.port,
+                    username = config.user,
+                    password = config.password,
+                    privateKeyPath = config.privateKeyPath,
+                    passphrase = config.passphrase,
+                ).also { it.connect(columns = initialCols, rows = initialRows) }
+            }
+            connector = conn
+            state = ConnectionState.Connected
+            Log.i(TAG, "SSH connected to ${config.user}@${config.host}:${config.port} (${initialCols}x${initialRows})")
+        } catch (e: Exception) {
+            Log.e(TAG, "SSH connection failed", e)
+            state = ConnectionState.Error(e.message ?: "Unknown error")
         }
-      }
     }
 
-    is ConnectionState.Connected -> {
-      connector?.let { conn ->
-        ComposeTerminalView(
-          ttyConnector = conn,
-          modifier = Modifier.fillMaxSize(),
-          onResize = { cols, rows -> conn.resizePty(cols, rows) },
-        )
-      }
+    DisposableEffect(Unit) {
+        onDispose { connector?.close() }
     }
-  }
+
+    when (val s = state) {
+        is ConnectionState.Connecting -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(16.dp))
+                    Text("Connecting to ${config.user}@${config.host}:${config.port}...")
+                }
+            }
+        }
+        is ConnectionState.Error -> {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Connection failed", style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(s.message, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+        is ConnectionState.Connected -> {
+            connector?.let { conn ->
+                ComposeTerminalView(
+                    ttyConnector = conn,
+                    modifier = Modifier.fillMaxSize(),
+                    columns = initialCols,
+                    rows = initialRows,
+                    fontSize = TERMINAL_FONT_SIZE,
+                    onResize = { cols, rows -> conn.resizePty(cols, rows) },
+                )
+            }
+        }
+    }
 }
 
 private sealed class ConnectionState {
-  data object Connecting : ConnectionState()
-  data object Connected : ConnectionState()
-  data class Error(val message: String) : ConnectionState()
+    data object Connecting : ConnectionState()
+    data object Connected : ConnectionState()
+    data class Error(val message: String) : ConnectionState()
 }
-
