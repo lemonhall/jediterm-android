@@ -117,6 +117,14 @@ private fun buildAnsiColorTestOutput(): String {
     append("\u001b[48;2;0;0;255m  \u001b[0m ")
     append("\u001b[38;2;255;165;0mOrange\u001b[0m\r\n\r\n")
 
+    append("CJK double-width:\r\n")
+    append("你好世界 Hello\r\n")
+    append("中文混合English测试\r\n")
+    append("├──目录1\r\n")
+    append("│  ├──文件.txt\r\n")
+    append("│  └──子目录\r\n")
+    append("└──目录2\r\n\r\n")
+
     append("Scrollback (swipe/drag):\r\n")
     for (i in 1..80) {
       append("Line ")

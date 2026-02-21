@@ -70,7 +70,9 @@ class TerminalRenderSnapshotTest {
     )
 
     assertEquals('你', snapshot.cells[0][0].ch)
+    assertEquals(true, snapshot.cells[0][0].isDoubleWidth)
     assertEquals(CharUtils.DWC, snapshot.cells[0][1].ch)
+    assertEquals(false, snapshot.cells[0][1].isDoubleWidth)
   }
 
   @Test

@@ -3,9 +3,11 @@ package com.lemonhall.jediterm.android
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.focusable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -30,6 +32,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.geometry.Offset
@@ -52,6 +55,8 @@ fun ComposeTerminalView(
   val executorServiceManager = remember { AndroidExecutorServiceManager() }
   val session = remember { TerminalSessionManager(columns = columns, rows = rows, executorServiceManager = executorServiceManager) }
   var bufferVersion by remember { mutableIntStateOf(0) }
+  val focusRequester = remember { FocusRequester() }
+  var inputValue by remember { mutableStateOf(TextFieldValue("")) }
 
   DisposableEffect(session) {
     val listener = TerminalModelListener {
@@ -63,14 +68,12 @@ fun ComposeTerminalView(
 
   LaunchedEffect(session, ttyConnector) {
     session.startSession(ttyConnector)
+    focusRequester.requestFocus()
   }
 
   DisposableEffect(session) {
     onDispose { session.stopSession() }
   }
-
-  var inputValue by remember { mutableStateOf("") }
-  val focusRequester = remember { FocusRequester() }
 
   val textMeasurer = rememberTextMeasurer()
   val baseTextStyle = remember {
@@ -111,6 +114,12 @@ fun ComposeTerminalView(
     modifier = modifier
       .fillMaxSize()
       .background(Color.Black)
+      .focusable()
+      .pointerInput(Unit) {
+        detectTapGestures {
+          focusRequester.requestFocus()
+        }
+      }
       .onSizeChanged { size ->
         val newCols = floor(size.width / charWidthPx).toInt().coerceAtLeast(5)
         val newRows = floor(size.height / charHeightPx).toInt().coerceAtLeast(2)
@@ -137,7 +146,7 @@ fun ComposeTerminalView(
           val linesDelta = (scrollRemainderPx / charHeightPx).toInt()
           if (linesDelta != 0) {
             val historyCount = session.terminalTextBuffer.historyLinesCount
-            scrollOrigin = (scrollOrigin - linesDelta).coerceIn(-historyCount, 0)
+            scrollOrigin = (scrollOrigin + linesDelta).coerceIn(-historyCount, 0)
             scrollRemainderPx -= linesDelta * charHeightPx
           }
         }
@@ -163,15 +172,18 @@ fun ComposeTerminalView(
         val rowCells = snapshot.cells[row]
         for (col in 0 until snapshot.columns) {
           val cell = rowCells[col]
+          val ch = cell.ch
+          if (ch == CharUtils.DWC || ch == '\u0000') continue
+
           val x = col * charWidthPx
+          val cellWidth = if (cell.isDoubleWidth) charWidthPx * 2f else charWidthPx
 
           val bg = cell.background.toComposeColor()
           if (bg != defaultBg) {
-            drawRect(color = bg, topLeft = Offset(x, y), size = Size(charWidthPx, charHeightPx))
+            drawRect(color = bg, topLeft = Offset(x, y), size = Size(cellWidth, charHeightPx))
           }
 
-          val ch = cell.ch
-          if (ch == ' ' || ch == CharUtils.DWC) continue
+          if (ch == ' ') continue
 
           val fg = cell.foreground.toComposeColor().let { if (cell.dim) it.copy(alpha = 0.7f) else it }
           val textStyle = baseTextStyle.copy(
@@ -192,16 +204,21 @@ fun ComposeTerminalView(
 
       // Cursor (hide while scrolled back).
       if (scrollOrigin == 0 && session.display.cursorVisible) {
-        val cursorCol = session.display.cursorX
+        var cursorCol = session.display.cursorX
         val cursorRow = session.display.cursorY - 1
         if (cursorCol in 0 until snapshot.columns && cursorRow in 0 until snapshot.rows) {
-          val cell = snapshot.cells[cursorRow][cursorCol]
+          var cell = snapshot.cells[cursorRow][cursorCol]
+          if (cell.ch == CharUtils.DWC && cursorCol > 0) {
+            cursorCol -= 1
+            cell = snapshot.cells[cursorRow][cursorCol]
+          }
           val x = cursorCol * charWidthPx
           val y = cursorRow * charHeightPx
 
           val cursorShape = session.display.cursorShape
           val cursorColor = cell.foreground.toComposeColor().copy(alpha = 0.8f)
-          val size = Size(charWidthPx, charHeightPx)
+          val cursorWidth = if (cell.isDoubleWidth) charWidthPx * 2f else charWidthPx
+          val size = Size(cursorWidth, charHeightPx)
 
           when (cursorShape) {
             com.jediterm.terminal.CursorShape.BLINK_UNDERLINE,
@@ -210,7 +227,7 @@ fun ComposeTerminalView(
               drawRect(
                 color = cursorColor,
                 topLeft = Offset(x, y + charHeightPx - 2f),
-                size = Size(charWidthPx, 2f),
+                size = Size(cursorWidth, 2f),
               )
             }
 
@@ -247,12 +264,11 @@ fun ComposeTerminalView(
     BasicTextField(
       value = inputValue,
       onValueChange = { newValue ->
-        if (newValue.isNotEmpty()) {
-          // Allow IME text input for printable characters.
-          session.sendString(newValue, userInput = true)
-          inputValue = ""
+        if (newValue.composition == null && newValue.text.isNotEmpty()) {
+          session.sendString(newValue.text, userInput = true)
+          inputValue = TextFieldValue("")
         } else {
-          inputValue = ""
+          inputValue = newValue
         }
       },
       modifier = Modifier
@@ -261,10 +277,6 @@ fun ComposeTerminalView(
       textStyle = TextStyle(color = Color.Transparent),
       cursorBrush = SolidColor(Color.Transparent),
     )
-  }
-
-  LaunchedEffect(Unit) {
-    focusRequester.requestFocus()
   }
 }
 

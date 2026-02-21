@@ -18,6 +18,7 @@ data class TerminalRenderCell(
   val underline: Boolean,
   val dim: Boolean,
   val hidden: Boolean,
+  val isDoubleWidth: Boolean = false,
 )
 
 data class TerminalRenderSnapshot(
@@ -179,6 +180,8 @@ private fun writeCellsFromEntry(
     if (col !in 0 until columns) continue
     val raw = characters[i]
     val ch = if (hidden) ' ' else sanitizeTerminalChar(raw)
+    val hasDwcPlaceholder = (i + 1 < characters.length) && (characters[i + 1] == CharUtils.DWC)
+    val isDoubleWidth = raw != CharUtils.DWC && CharUtils.isDoubleWidthCharacter(raw.code, false) && (hasDwcPlaceholder || col == columns - 1)
     cells[screenRow][col] = TerminalRenderCell(
       ch = ch,
       foreground = visibleForeground,
@@ -188,6 +191,7 @@ private fun writeCellsFromEntry(
       underline = underline,
       dim = dim,
       hidden = hidden,
+      isDoubleWidth = isDoubleWidth,
     )
   }
 }
