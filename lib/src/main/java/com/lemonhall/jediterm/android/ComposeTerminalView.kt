@@ -7,7 +7,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.focusable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -18,8 +17,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.KeyEvent
@@ -32,7 +33,6 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.geometry.Offset
@@ -57,7 +57,8 @@ fun ComposeTerminalView(
   val session = remember { TerminalSessionManager(columns = columns, rows = rows, executorServiceManager = executorServiceManager) }
   var bufferVersion by remember { mutableIntStateOf(0) }
   val focusRequester = remember { FocusRequester() }
-  var inputValue by remember { mutableStateOf(TextFieldValue("")) }
+  val keyboardController = LocalSoftwareKeyboardController.current
+  var inputValue by remember { mutableStateOf("") }
 
   DisposableEffect(session) {
     val listener = TerminalModelListener {
@@ -70,6 +71,7 @@ fun ComposeTerminalView(
   LaunchedEffect(session, ttyConnector) {
     session.startSession(ttyConnector)
     focusRequester.requestFocus()
+    keyboardController?.show()
   }
 
   DisposableEffect(session) {
@@ -115,12 +117,6 @@ fun ComposeTerminalView(
     modifier = modifier
       .fillMaxSize()
       .background(Color.Black)
-      .focusable()
-      .pointerInput(Unit) {
-        detectTapGestures {
-          focusRequester.requestFocus()
-        }
-      }
       .onSizeChanged { size ->
         val newCols = floor(size.width / charWidthPx).toInt().coerceAtLeast(5)
         val newRows = floor(size.height / charHeightPx).toInt().coerceAtLeast(2)
@@ -131,30 +127,56 @@ fun ComposeTerminalView(
           onResize?.invoke(newCols, newRows)
         }
       }
-      .onPreviewKeyEvent { keyEvent ->
-        val bytes = mapKeyEventToTerminalBytes(keyEvent, session)
-        if (bytes != null) {
-          session.sendBytes(bytes)
-          true
-        } else {
-          false
-        }
-      }
-      .pointerInput(isUsingAlternateBuffer, charHeightPx, bufferVersion) {
-        if (isUsingAlternateBuffer) return@pointerInput
-        detectDragGestures { _, dragAmount ->
-          if (charHeightPx <= 0f) return@detectDragGestures
-          scrollRemainderPx += dragAmount.y
-          val linesDelta = (scrollRemainderPx / charHeightPx).toInt()
-          if (linesDelta != 0) {
-            val historyCount = session.terminalTextBuffer.historyLinesCount
-            scrollOrigin = (scrollOrigin + linesDelta).coerceIn(-historyCount, 0)
-            scrollRemainderPx -= linesDelta * charHeightPx
+    ,
+  ) {
+    BasicTextField(
+      value = inputValue,
+      onValueChange = { newValue ->
+        val result = dispatchImeText(newValue)
+        result.toSend?.let { session.sendString(it, userInput = true) }
+        inputValue = result.nextValue
+      },
+      modifier = Modifier
+        .matchParentSize()
+        .focusRequester(focusRequester)
+        .onPreviewKeyEvent { keyEvent ->
+          val bytes = mapKeyEventToTerminalBytes(keyEvent, session)
+          if (bytes != null) {
+            session.sendBytes(bytes)
+            true
+          } else {
+            false
           }
         }
-      },
-  ) {
-    Canvas(modifier = Modifier.fillMaxSize()) {
+        .alpha(0f),
+      textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
+      cursorBrush = SolidColor(Color.Transparent),
+      singleLine = false,
+    )
+
+    Canvas(
+      modifier = Modifier
+        .fillMaxSize()
+        .pointerInput(Unit) {
+          detectTapGestures {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+          }
+        }
+        .pointerInput(isUsingAlternateBuffer, charHeightPx, bufferVersion) {
+          if (isUsingAlternateBuffer) return@pointerInput
+          detectDragGestures { _, dragAmount ->
+            if (charHeightPx <= 0f) return@detectDragGestures
+            scrollRemainderPx += dragAmount.y
+            val linesDelta = (scrollRemainderPx / charHeightPx).toInt()
+            if (linesDelta != 0) {
+              val historyCount = session.terminalTextBuffer.historyLinesCount
+              scrollOrigin = (scrollOrigin + linesDelta).coerceIn(-historyCount, 0)
+              scrollRemainderPx -= linesDelta * charHeightPx
+            }
+          }
+        },
+    ) {
       val snapshot = buildTerminalRenderSnapshot(
         terminalTextBuffer = session.terminalTextBuffer,
         styleState = session.terminal.styleState,
@@ -262,23 +284,6 @@ fun ComposeTerminalView(
         }
       }
     }
-
-    BasicTextField(
-      value = inputValue,
-      onValueChange = { newValue ->
-        if (newValue.composition == null && newValue.text.isNotEmpty()) {
-          session.sendString(newValue.text, userInput = true)
-          inputValue = TextFieldValue("")
-        } else {
-          inputValue = newValue
-        }
-      },
-      modifier = Modifier
-        .fillMaxSize()
-        .focusRequester(focusRequester),
-      textStyle = TextStyle(color = Color.Transparent),
-      cursorBrush = SolidColor(Color.Transparent),
-    )
   }
 }
 
