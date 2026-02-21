@@ -1,12 +1,19 @@
 package com.lemonhall.jediterm.android
 
+import android.content.Context
+import android.text.Editable
+import android.text.InputType
+import android.text.TextWatcher
+import android.util.Log
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -17,14 +24,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.KeyEvent
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextStyle
@@ -37,6 +38,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.viewinterop.AndroidView
 import com.jediterm.core.util.Ascii
 import com.jediterm.core.input.InputEvent
 import com.jediterm.core.input.KeyEvent as JediKeyEvent
@@ -53,12 +55,11 @@ fun ComposeTerminalView(
   rows: Int = 24,
   onResize: ((columns: Int, rows: Int) -> Unit)? = null,
 ) {
+  val logTag = "JeditermIme"
   val executorServiceManager = remember { AndroidExecutorServiceManager() }
   val session = remember { TerminalSessionManager(columns = columns, rows = rows, executorServiceManager = executorServiceManager) }
   var bufferVersion by remember { mutableIntStateOf(0) }
-  val focusRequester = remember { FocusRequester() }
-  val keyboardController = LocalSoftwareKeyboardController.current
-  var inputValue by remember { mutableStateOf("") }
+  var editTextRef by remember { mutableStateOf<EditText?>(null) }
 
   DisposableEffect(session) {
     val listener = TerminalModelListener {
@@ -70,8 +71,6 @@ fun ComposeTerminalView(
 
   LaunchedEffect(session, ttyConnector) {
     session.startSession(ttyConnector)
-    focusRequester.requestFocus()
-    keyboardController?.show()
   }
 
   DisposableEffect(session) {
@@ -129,29 +128,76 @@ fun ComposeTerminalView(
       }
     ,
   ) {
-    BasicTextField(
-      value = inputValue,
-      onValueChange = { newValue ->
-        val result = dispatchImeText(newValue)
-        result.toSend?.let { session.sendString(it, userInput = true) }
-        inputValue = result.nextValue
-      },
-      modifier = Modifier
-        .matchParentSize()
-        .focusRequester(focusRequester)
-        .onPreviewKeyEvent { keyEvent ->
-          val bytes = mapKeyEventToTerminalBytes(keyEvent, session)
-          if (bytes != null) {
-            session.sendBytes(bytes)
-            true
-          } else {
-            false
+    AndroidView(
+      factory = { context ->
+        EditText(context).apply {
+          alpha = 0f
+          setBackgroundColor(android.graphics.Color.TRANSPARENT)
+          setTextColor(android.graphics.Color.TRANSPARENT)
+          isCursorVisible = false
+          textSize = 1f
+          isFocusable = true
+          isFocusableInTouchMode = true
+
+          inputType = InputType.TYPE_CLASS_TEXT or
+            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+          imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
+
+          addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+              val editable = s ?: return
+              val text = editable.toString()
+              if (text.isNotEmpty()) {
+                Log.d(logTag, "afterTextChanged len=${text.length} hasNewline=${text.indexOf('\n') >= 0}")
+                val normalized = text
+                  .replace("\r\n", "\n")
+                  .replace("\r", "\n")
+                session.sendString(normalized, userInput = true)
+                post { editable.clear() }
+              }
+            }
+          })
+
+          setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE ||
+              actionId == EditorInfo.IME_ACTION_GO ||
+              actionId == EditorInfo.IME_ACTION_SEND
+            ) {
+              session.sendString("\n", userInput = true)
+              true
+            } else {
+              false
+            }
+          }
+
+          setOnKeyListener { _, _, event ->
+            if (event.action != android.view.KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            val bytes = mapKeyEventToTerminalBytes(KeyEvent(event), session)
+            if (bytes != null) {
+              Log.d(logTag, "onKeyDown keyCode=${event.keyCode} sendBytes=${bytes.size}")
+              session.sendBytes(bytes)
+              true
+            } else {
+              false
+            }
           }
         }
-        .alpha(0f),
-      textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
-      cursorBrush = SolidColor(Color.Transparent),
-      singleLine = false,
+      },
+      modifier = Modifier.matchParentSize(),
+      update = { editText ->
+        if (editTextRef !== editText) {
+          editTextRef = editText
+        }
+        if (!editText.hasFocus()) {
+          editText.requestFocus()
+          val imm = editText.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+          imm.showSoftInput(editText, InputMethodManager.SHOW_IMPLICIT)
+          Log.d(logTag, "requestFocus+showSoftInput")
+        }
+      },
     )
 
     Canvas(
@@ -159,8 +205,11 @@ fun ComposeTerminalView(
         .fillMaxSize()
         .pointerInput(Unit) {
           detectTapGestures {
-            focusRequester.requestFocus()
-            keyboardController?.show()
+            editTextRef?.let { et ->
+              et.requestFocus()
+              val imm = et.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+              imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+            }
           }
         }
         .pointerInput(isUsingAlternateBuffer, charHeightPx, bufferVersion) {
@@ -293,6 +342,13 @@ private fun mapKeyEventToTerminalBytes(keyEvent: KeyEvent, session: TerminalSess
 
   val modifiers = buildJediModifiers(native)
 
+  // Some environments don't translate CR to NL; prefer LF for Enter.
+  if (native.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
+    native.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
+  ) {
+    return byteArrayOf(Ascii.LF)
+  }
+
   // Ctrl + [A-Z] => control char.
   if ((modifiers and InputEvent.CTRL_MASK) != 0) {
     val keyCode = native.keyCode
@@ -308,7 +364,6 @@ private fun mapKeyEventToTerminalBytes(keyEvent: KeyEvent, session: TerminalSess
     android.view.KeyEvent.KEYCODE_DPAD_LEFT -> JediKeyEvent.VK_LEFT
     android.view.KeyEvent.KEYCODE_DPAD_RIGHT -> JediKeyEvent.VK_RIGHT
 
-    android.view.KeyEvent.KEYCODE_ENTER -> JediKeyEvent.VK_ENTER
     android.view.KeyEvent.KEYCODE_DEL -> JediKeyEvent.VK_BACK_SPACE
     android.view.KeyEvent.KEYCODE_FORWARD_DEL -> JediKeyEvent.VK_DELETE
 

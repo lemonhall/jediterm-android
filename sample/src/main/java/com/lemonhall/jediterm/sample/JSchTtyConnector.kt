@@ -1,5 +1,6 @@
 package com.lemonhall.jediterm.sample
 
+import android.util.Log
 import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
@@ -18,6 +19,9 @@ class JSchTtyConnector(
   private val privateKeyPath: String?,
   private val passphrase: String?,
 ) : TtyConnector {
+  private val logTag = "JeditermSsh"
+  private var readLogRemaining = 200
+  private var writeLogRemaining = 50
 
   private var session: Session? = null
   private var channel: ChannelShell? = null
@@ -51,18 +55,40 @@ class JSchTtyConnector(
 
     session = sshSession
     channel = sshChannel
-    inputStream = sshChannel.inputStream
+    val input = sshChannel.inputStream
+    inputStream = input
     outputStream = sshChannel.outputStream
-    reader = InputStreamReader(sshChannel.inputStream, StandardCharsets.UTF_8)
+    reader = InputStreamReader(input, StandardCharsets.UTF_8)
   }
 
   override fun read(buf: CharArray, offset: Int, length: Int): Int {
     val localReader = reader ?: throw IOException("SSH channel not connected")
-    return localReader.read(buf, offset, length)
+    val n = localReader.read(buf, offset, length)
+    if (n > 0 && readLogRemaining > 0) {
+      readLogRemaining--
+      Log.d(logTag, "read chars=$n")
+    }
+    return n
   }
 
   override fun write(bytes: ByteArray) {
     val out = outputStream ?: throw IOException("SSH channel not connected")
+    if (writeLogRemaining > 0) {
+      writeLogRemaining--
+      Log.d(logTag, "write bytes=${bytes.size}")
+    }
+    if (bytes.isNotEmpty()) {
+      val controlBytes = bytes
+        .asSequence()
+        .map { it.toInt() and 0xFF }
+        .filter { it < 0x20 || it == 0x7F }
+        .take(8)
+        .toList()
+      if (controlBytes.isNotEmpty()) {
+        val formatted = controlBytes.joinToString(prefix = "[", postfix = "]") { "0x%02X".format(it) }
+        Log.d(logTag, "write control=$formatted")
+      }
+    }
     out.write(bytes)
     out.flush()
   }
