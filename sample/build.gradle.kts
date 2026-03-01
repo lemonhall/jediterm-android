@@ -25,6 +25,10 @@ android {
 
     buildFeatures { compose = true }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "META-INF/versions/**/OSGI-INF/MANIFEST.MF"
@@ -48,4 +52,6 @@ dependencies {
     implementation(libs.jsch)
 
     testImplementation(libs.junit)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+    testImplementation("org.json:json:20231013")
 }

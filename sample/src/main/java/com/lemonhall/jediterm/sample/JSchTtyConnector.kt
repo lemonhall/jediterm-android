@@ -19,6 +19,7 @@ class JSchTtyConnector(
     private val password: String?,
     private val privateKeyPath: String?,
     private val passphrase: String?,
+    var onCwdChangeCallback: ((String) -> Unit)? = null,
 ) : TtyConnector {
     private val logTag = "JeditermSsh"
 
@@ -27,6 +28,8 @@ class JSchTtyConnector(
     private var bufferedInput: BufferedInputStream? = null
     private var outputStream: OutputStream? = null
     private var reader: InputStreamReader? = null
+    private var currentCwd: String? = null
+    private val readBuffer = StringBuilder()
 
     fun connect(columns: Int = 80, rows: Int = 24) {
         val jsch = JSch()
@@ -66,8 +69,15 @@ class JSchTtyConnector(
         bufferedInput = buffered
         reader = InputStreamReader(buffered, StandardCharsets.UTF_8)
 
-        // 修复 UTF-8 环境
-        val initCmd = "export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF-8; stty iutf8\n"
+        // 修复 UTF-8 环境 + 注入目录变化监控
+        val initCmd = """
+            export LANG=en_US.UTF-8; export LC_ALL=en_US.UTF_8; stty iutf8
+            __ime_report_cwd() { echo "__IME_CWD__$(pwd -P)__IME_CWD__"; }
+            cd() { builtin cd "$@" && __ime_report_cwd; }
+            pushd() { builtin pushd "$@" && __ime_report_cwd; }
+            popd() { builtin popd "$@" && __ime_report_cwd; }
+            __ime_report_cwd
+        """.trimIndent() + "\n"
         outputStream!!.write(initCmd.toByteArray(StandardCharsets.UTF_8))
         outputStream!!.flush()
     }
@@ -77,8 +87,39 @@ class JSchTtyConnector(
         val n = localReader.read(buf, offset, length)
         if (n > 0) {
             logNonAscii(buf, offset, n)
+            detectCwdFromOutput(buf, offset, n)
         }
         return n
+    }
+
+    private fun detectCwdFromOutput(buf: CharArray, offset: Int, count: Int) {
+        try {
+            readBuffer.append(buf, offset, count)
+
+            // 保持buffer大小合理
+            if (readBuffer.length > 4096) {
+                readBuffer.delete(0, readBuffer.length - 2048)
+            }
+
+            val marker = "__IME_CWD__"
+            val text = readBuffer.toString()
+            val startIdx = text.indexOf(marker)
+            if (startIdx >= 0) {
+                val endIdx = text.indexOf(marker, startIdx + marker.length)
+                if (endIdx > startIdx) {
+                    val cwd = text.substring(startIdx + marker.length, endIdx).trim()
+                    if (cwd.isNotEmpty() && cwd != currentCwd) {
+                        currentCwd = cwd
+                        onCwdChangeCallback?.invoke(cwd)
+                        Log.d(logTag, "Directory changed to: $cwd")
+                    }
+                    // 清理已处理的内容
+                    readBuffer.delete(0, endIdx + marker.length)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(logTag, "Error detecting cwd", e)
+        }
     }
 
     private fun logNonAscii(buf: CharArray, offset: Int, count: Int) {
@@ -132,6 +173,35 @@ class JSchTtyConnector(
         val ch = channel ?: return
         if (ch.isConnected && !ch.isClosed) {
             ch.setPtySize(columns, rows, columns * 8, rows * 16)
+        }
+    }
+
+    fun getOutputStream(): OutputStream? = outputStream
+
+    fun getSessionInfo(): Triple<String, String, Int> = Triple(host, username, port)
+
+    fun getSession(): Session? = session
+
+    suspend fun detectCwdChange(): String? {
+        return try {
+            val out = outputStream ?: return null
+            // 发送pwd命令并读取结果
+            // 注意：这是一个简化实现，实际需要更复杂的输出解析
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                kotlinx.coroutines.withTimeout(1000) {
+                    val marker = "___CWD_MARKER___"
+                    val cmd = "echo $marker; pwd -P; echo $marker\n"
+                    out.write(cmd.toByteArray(StandardCharsets.UTF_8))
+                    out.flush()
+
+                    // 等待输出（简化实现）
+                    kotlinx.coroutines.delay(300)
+                    null // 需要从输出流解析
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to detect cwd", e)
+            null
         }
     }
 }

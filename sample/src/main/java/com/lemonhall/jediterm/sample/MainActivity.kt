@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.lemonhall.jediterm.android.ComposeTerminalView
 import com.lemonhall.jediterm.android.MeasureTerminalSize
@@ -59,10 +60,12 @@ private fun SshTerminalScreen(config: SshConfig) {
     }
 
     val (initialCols, initialRows) = measuredSize!!
+    val context = LocalContext.current
 
     // 第二阶段：用测量到的尺寸去连接 SSH
     var state by remember { mutableStateOf<ConnectionState>(ConnectionState.Connecting) }
     var connector by remember { mutableStateOf<JSchTtyConnector?>(null) }
+    var imeBridge by remember { mutableStateOf<com.lemonhall.jediterm.sample.imebridge.ImeBridgeHelper?>(null) }
 
     LaunchedEffect(config, initialCols, initialRows) {
         state = ConnectionState.Connecting
@@ -80,6 +83,17 @@ private fun SshTerminalScreen(config: SshConfig) {
             connector = conn
             state = ConnectionState.Connected
             Log.i(TAG, "SSH connected to ${config.user}@${config.host}:${config.port} (${initialCols}x${initialRows})")
+
+            // 启动IME Bridge（默认禁用，可通过配置启用）
+            val bridge = com.lemonhall.jediterm.sample.imebridge.ImeBridgeHelper(
+                context = context,
+                connector = conn,
+                config = com.lemonhall.jediterm.sample.imebridge.ImeBridgeConfig(
+                    enabled = true,
+                ),
+            )
+            bridge.start()
+            imeBridge = bridge
         } catch (e: Exception) {
             Log.e(TAG, "SSH connection failed", e)
             state = ConnectionState.Error(e.message ?: "Unknown error")
@@ -87,7 +101,10 @@ private fun SshTerminalScreen(config: SshConfig) {
     }
 
     DisposableEffect(Unit) {
-        onDispose { connector?.close() }
+        onDispose {
+            connector?.close()
+            imeBridge?.stop()
+        }
     }
 
     when (val s = state) {
