@@ -84,6 +84,34 @@ On macOS, sshd may create a new PTY session with `LANG` / `LC_CTYPE` unset. zsh 
 
 Side effect: the terminal echoes this initialization command after connecting. A future improvement is to issue `clear` to keep the screen clean.
 
+## IME Bridge: Automatic Dictionary Profile Switching
+
+The `:sample` app includes an **IME Bridge** feature that automatically detects directory changes in SSH sessions and sends dictionary profile configurations to the fcitx5 input method app.
+
+### How it works
+
+1. **Before activation**: When typing `luyouquchong` (路由驱虫), the input method suggests incorrect words:
+
+   ![Dictionary before activation](./dic_active_before.png)
+
+2. **Automatic detection**: When you `cd` into a project directory containing `.ime/meta.json`, the SSH app automatically detects the configuration file and sends it to the fcitx5 IME app via broadcast.
+
+3. **Dictionary activation**: The fcitx5 IME app receives the broadcast and activates the corresponding dictionary profiles:
+
+   ![Android dictionary activation](./android_dic.png)
+
+4. **After activation**: Now typing `luyouquchong` shows the correct suggestion "路由去重" (route deduplication):
+
+   ![Dictionary after activation](./dic_active_after.png)
+
+5. **Dictionary files**: The activated dictionary profiles contain domain-specific vocabulary:
+
+   ![Dictionary files](./dics.png)
+
+### Integration
+
+For downstream projects (like [kotlinagentapp](https://github.com/lemonhall/kotlinagentapp)) that want to integrate this feature, see the detailed integration guide: [docs/IME_BRIDGE_INTEGRATION.md](./docs/IME_BRIDGE_INTEGRATION.md)
+
 ## Build
 
 ```powershell
